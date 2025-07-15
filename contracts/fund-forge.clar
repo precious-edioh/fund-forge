@@ -163,3 +163,80 @@
 (define-read-only (calculate-platform-fee (amount uint))
   (/ (* amount (var-get platform-fee-rate)) u10000)
 )
+
+;; Query contributor voting status
+(define-read-only (get-vote-status
+    (campaign-id uint)
+    (voter principal)
+  )
+  (map-get? contributor-votes {
+    campaign-id: campaign-id,
+    voter: voter,
+  })
+)
+
+;; INTERNAL UTILITY FUNCTIONS
+
+;; Validate string input integrity
+(define-private (is-valid-string (input (string-ascii 256)))
+  (let ((length (len input)))
+    (and
+      (> length u0)
+      (<= length u256)
+      ;; Additional validation can be implemented here
+      ;; Currently validates non-empty and reasonable length
+      true
+    )
+  )
+)
+
+;; Validate campaign ID boundaries
+(define-private (is-valid-campaign-id (campaign-id uint))
+  (and
+    (> campaign-id u0)
+    (<= campaign-id MAX_CAMPAIGN_ID)
+  )
+)
+
+;; Manage contributor list registration
+(define-private (add-contributor-to-list
+    (campaign-id uint)
+    (contributor principal)
+  )
+  (let ((current-list (default-to (list)
+      (get contributor-list
+        (map-get? campaign-contributors { campaign-id: campaign-id })
+      ))))
+    (if (< (len current-list) u500)
+      (begin
+        (map-set campaign-contributors { campaign-id: campaign-id } { contributor-list: (unwrap! (as-max-len? (append current-list contributor) u500)
+          ERR_CONTRIBUTOR_LIST_FULL
+        ) }
+        )
+        (ok true)
+      )
+      (ok true)
+    )
+  )
+)
+
+;; Automated campaign status lifecycle management
+(define-private (update-campaign-status (campaign-id uint))
+  (match (get-campaign campaign-id)
+    campaign (begin
+      (if (>= stacks-block-height (get deadline-height campaign))
+        (if (>= (get raised campaign) (get goal campaign))
+          (map-set campaigns { campaign-id: campaign-id }
+            (merge campaign { status: STATUS_SUCCESSFUL })
+          )
+          (map-set campaigns { campaign-id: campaign-id }
+            (merge campaign { status: STATUS_FAILED })
+          )
+        )
+        true
+      )
+      true
+    )
+    false
+  )
+)
