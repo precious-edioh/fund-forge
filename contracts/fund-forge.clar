@@ -80,3 +80,86 @@
     min-contribution: uint,
   }
 )
+
+;; Contributor Investment Tracking
+(define-map contributions
+  {
+    campaign-id: uint,
+    contributor: principal,
+  }
+  {
+    amount: uint,
+    refunded: bool,
+    voting-power: uint,
+  }
+)
+
+;; Governance Vote Registry
+(define-map contributor-votes
+  {
+    campaign-id: uint,
+    voter: principal,
+  }
+  {
+    voted: bool,
+    vote-for: bool,
+  }
+)
+
+;; Campaign Stakeholder Directory
+(define-map campaign-contributors
+  { campaign-id: uint }
+  { contributor-list: (list 500 principal) }
+)
+
+;; READ-ONLY QUERY FUNCTIONS
+
+;; Retrieve comprehensive campaign information
+(define-read-only (get-campaign (campaign-id uint))
+  (map-get? campaigns { campaign-id: campaign-id })
+)
+
+;; Query specific contributor investment details
+(define-read-only (get-contribution
+    (campaign-id uint)
+    (contributor principal)
+  )
+  (map-get? contributions {
+    campaign-id: campaign-id,
+    contributor: contributor,
+  })
+)
+
+;; Get total platform campaign count
+(define-read-only (get-campaign-count)
+  (var-get campaign-counter)
+)
+
+;; Get current platform fee structure
+(define-read-only (get-platform-fee-rate)
+  (var-get platform-fee-rate)
+)
+
+;; Validate campaign active status
+(define-read-only (is-campaign-active (campaign-id uint))
+  (match (get-campaign campaign-id)
+    campaign (and
+      (is-eq (get status campaign) STATUS_ACTIVE)
+      (< stacks-block-height (get deadline-height campaign))
+    )
+    false
+  )
+)
+
+;; Verify campaign funding goal achievement
+(define-read-only (is-campaign-successful (campaign-id uint))
+  (match (get-campaign campaign-id)
+    campaign (>= (get raised campaign) (get goal campaign))
+    false
+  )
+)
+
+;; Calculate platform fee for given amount
+(define-read-only (calculate-platform-fee (amount uint))
+  (/ (* amount (var-get platform-fee-rate)) u10000)
+)
