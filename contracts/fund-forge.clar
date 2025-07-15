@@ -345,3 +345,88 @@
     (ok true)
   )
 )
+
+;; Execute fund disbursement for successful campaigns
+(define-public (claim-funds (campaign-id uint))
+  (let (
+      (campaign (unwrap! (get-campaign campaign-id) ERR_CAMPAIGN_NOT_FOUND))
+      (platform-fee (calculate-platform-fee (get raised campaign)))
+      (creator-amount (- (get raised campaign) platform-fee))
+    )
+    ;; Validate claim authorization
+    (asserts! (is-valid-campaign-id campaign-id) ERR_INVALID_PARAMETERS)
+    (update-campaign-status campaign-id)
+    (asserts! (is-eq (get creator campaign) tx-sender) ERR_UNAUTHORIZED)
+    (asserts! (>= stacks-block-height (get deadline-height campaign))
+      ERR_CAMPAIGN_ACTIVE
+    )
+    (asserts! (is-campaign-successful campaign-id) ERR_GOAL_NOT_MET)
+    ;; Process community governance validation
+    (if (get voting-enabled campaign)
+      (begin
+        (asserts! (>= stacks-block-height (get voting-deadline-height campaign))
+          ERR_VOTING_PERIOD_ENDED
+        )
+        (asserts! (> (get votes-for campaign) (get votes-against campaign))
+          ERR_GOAL_NOT_MET
+        )
+      )
+      true
+    )
+    ;; Execute fund disbursement
+    (try! (as-contract (stx-transfer? creator-amount tx-sender (get creator campaign))))
+    ;; Process platform fee collection
+    (if (> platform-fee u0)
+      (try! (as-contract (stx-transfer? platform-fee tx-sender CONTRACT_OWNER)))
+      true
+    )
+    (ok true)
+  )
+)
+
+;; Process automatic refund for failed campaigns
+(define-public (request-refund (campaign-id uint))
+  (let (
+      (campaign (unwrap! (get-campaign campaign-id) ERR_CAMPAIGN_NOT_FOUND))
+      (contribution (unwrap! (get-contribution campaign-id tx-sender) ERR_NO_CONTRIBUTION))
+    )
+    ;; Validate refund eligibility
+    (asserts! (is-valid-campaign-id campaign-id) ERR_INVALID_PARAMETERS)
+    (update-campaign-status campaign-id)
+    (asserts! (not (get refunded contribution)) ERR_ALREADY_REFUNDED)
+    (asserts! (>= stacks-block-height (get deadline-height campaign))
+      ERR_CAMPAIGN_ACTIVE
+    )
+    (asserts! (not (is-campaign-successful campaign-id)) ERR_GOAL_NOT_MET)
+    ;; Update refund status
+    (map-set contributions {
+      campaign-id: campaign-id,
+      contributor: tx-sender,
+    }
+      (merge contribution { refunded: true })
+    )
+    ;; Execute refund transfer
+    (try! (as-contract (stx-transfer? (get amount contribution) tx-sender tx-sender)))
+    (ok true)
+  )
+)
+
+;; Process community governance vote
+(define-public (vote
+    (campaign-id uint)
+    (vote-for bool)
+  )
+  (let (
+      (campaign (unwrap! (get-campaign campaign-id) ERR_CAMPAIGN_NOT_FOUND))
+      (contribution (unwrap! (get-contribution campaign-id tx-sender) ERR_NO_CONTRIBUTION))
+      (existing-vote (map-get? contributor-votes {
+        campaign-id: campaign-id,
+        voter: tx-sender,
+      }))
+    )
+    ;; Validate voting eligibility
+    (asserts! (is-valid-campaign-id campaign-id) ERR_INVALID_PARAMETERS)
+    (asserts! (get voting-enabled campaign) ERR_UNAUTHORIZED)
+    (asserts! (>= stacks-block-height (get deadline-height campaign))
+      ERR_CAMPAIGN_ACTIVE
+    )
