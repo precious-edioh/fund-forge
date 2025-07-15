@@ -240,3 +240,108 @@
     false
   )
 )
+
+;; CORE PUBLIC FUNCTIONS
+
+;; Launch new crowdfunding campaign
+(define-public (create-campaign
+    (title (string-ascii 64))
+    (description (string-ascii 256))
+    (goal uint)
+    (duration-blocks uint)
+    (voting-enabled bool)
+    (voting-duration-blocks uint)
+    (min-contribution uint)
+  )
+  (let (
+      (campaign-id (+ (var-get campaign-counter) u1))
+      (deadline-height (+ stacks-block-height duration-blocks))
+      (validated-voting-duration (if voting-enabled
+        (begin
+          (asserts! (<= voting-duration-blocks MAX_VOTING_DURATION_BLOCKS)
+            ERR_INVALID_PARAMETERS
+          )
+          voting-duration-blocks
+        )
+        u0
+      ))
+      (voting-deadline (if voting-enabled
+        (+ deadline-height validated-voting-duration)
+        deadline-height
+      ))
+    )
+    ;; Comprehensive input validation
+    (asserts!
+      (is-valid-string (unwrap! (as-max-len? title u64) ERR_INVALID_STRING))
+      ERR_INVALID_STRING
+    )
+    (asserts! (is-valid-string description) ERR_INVALID_STRING)
+    (asserts! (> goal u0) ERR_INVALID_PARAMETERS)
+    (asserts! (>= duration-blocks MIN_DURATION_BLOCKS) ERR_INVALID_PARAMETERS)
+    (asserts! (<= duration-blocks MAX_DURATION_BLOCKS) ERR_INVALID_PARAMETERS)
+    (asserts! (> min-contribution u0) ERR_INVALID_PARAMETERS)
+    ;; Initialize campaign in registry
+    (map-set campaigns { campaign-id: campaign-id } {
+      creator: tx-sender,
+      title: (unwrap! (as-max-len? title u64) ERR_INVALID_STRING),
+      description: description,
+      goal: goal,
+      raised: u0,
+      deadline-height: deadline-height,
+      created-height: stacks-block-height,
+      status: STATUS_ACTIVE,
+      voting-enabled: voting-enabled,
+      voting-deadline-height: voting-deadline,
+      votes-for: u0,
+      votes-against: u0,
+      min-contribution: min-contribution,
+    })
+    (var-set campaign-counter campaign-id)
+    (ok campaign-id)
+  )
+)
+
+;; Process contributor investment
+(define-public (contribute
+    (campaign-id uint)
+    (amount uint)
+  )
+  (let (
+      (campaign (unwrap! (get-campaign campaign-id) ERR_CAMPAIGN_NOT_FOUND))
+      (existing-contribution (default-to {
+        amount: u0,
+        refunded: false,
+        voting-power: u0,
+      }
+        (get-contribution campaign-id tx-sender)
+      ))
+      (new-amount (+ (get amount existing-contribution) amount))
+      (voting-power (if (get voting-enabled campaign)
+        amount
+        u0
+      ))
+    )
+    ;; Validate contribution parameters
+    (asserts! (is-valid-campaign-id campaign-id) ERR_INVALID_PARAMETERS)
+    (asserts! (is-campaign-active campaign-id) ERR_CAMPAIGN_ENDED)
+    (asserts! (>= amount (get min-contribution campaign)) ERR_INVALID_AMOUNT)
+    ;; Execute secure STX transfer to escrow
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    ;; Update contributor investment record
+    (map-set contributions {
+      campaign-id: campaign-id,
+      contributor: tx-sender,
+    } {
+      amount: new-amount,
+      refunded: false,
+      voting-power: (+ (get voting-power existing-contribution) voting-power),
+    })
+    ;; Update campaign funding metrics
+    (map-set campaigns { campaign-id: campaign-id }
+      (merge campaign { raised: (+ (get raised campaign) amount) })
+    )
+    ;; Register contributor in campaign directory
+    (try! (add-contributor-to-list campaign-id tx-sender))
+    (ok true)
+  )
+)
